@@ -15,6 +15,7 @@ using TagLib;
 using NAudio;
 using NAudio.Wave;
 using MMP.Hotkey;
+using MMP.MenuHandlers;
 
 namespace MMP {
     // This is public so you can change it in the settings.
@@ -28,7 +29,6 @@ namespace MMP {
     public partial class Form1 : Form {
         public Form1() {
             InitializeComponent();
-            menucount = Labels.Length;
         }
 
         bool playing = false;
@@ -41,51 +41,9 @@ namespace MMP {
         GlobalHotkey hk_MediaPrev;
         GlobalHotkey hk_MediaPlay;
 
-        public enum selectionModes {
-            Volume,
-            Next,
-            Position,
-            LoadPlaylist,
-            Track,
-            Previous,
-            Close
-        }
-        public enum selectionModesNoPlaylist {
-            Volume,
-            Position,
-            LoadPlaylist,
-            Close
-        }
-        public selectionModes ConvertModes(selectionModesNoPlaylist sel) {
-            switch (sel) {
-                case selectionModesNoPlaylist.Volume:
-                    return selectionModes.Volume;
-                case selectionModesNoPlaylist.Position:
-                    return selectionModes.Position;
-                case selectionModesNoPlaylist.LoadPlaylist:
-                    return selectionModes.LoadPlaylist;
-                case selectionModesNoPlaylist.Close:
-                    return selectionModes.Close;
-            }
-            return selectionModes.Close;
-        }
-        string[] Labels = {
-                              "Volume",
-                              "Next",
-                              "Position",
-                              "Load Playlist",
-                              "Track",
-                              "Previous",
-                              "Close"
-                          };
-        string[] LabelsNoPlaylist = {
-                                        "Volume",
-                                        "Position",
-                                        "Load Playlist",
-                                        "Close"
-                                    };
-
-        int menucount;
+        GlobalHotkey hk_StandNext;
+        GlobalHotkey hk_StandPrev;
+        GlobalHotkey hk_StandPlay;
 
         float curval = 0;
         float nextval = 0;
@@ -94,30 +52,31 @@ namespace MMP {
         float nextpos = 0;
 
         float cursel = 0;
-        float nextsel = 0;
+        public float nextsel = 0;
         bool mouseInside = false;
 
         float curact = 0;
-        float nextact = 0;
+        public float nextact = 0;
 
         float curanim = 0;
         float nextanim = 1;
 
-        bool moving = false;
-        bool selecting = false;
-        selectionModes mode = selectionModes.Volume;
+        public bool selecting = false;
 
         Point lastLocation = new Point();
         bool windowMoving = false;
 
-        float mouseDistance = 0;
+        public float mouseDistance = 0;
         bool inCenter = false;
+
+        MenuController menuControl;
+        SongHandler songHandler;
 
         ColorMode colorMode = ColorMode.Random;
 
         Song currentSong;
         Playlist currentPlaylist = new Playlist();
-        bool playlistActive;
+        public bool playlistActive;
         int currentIndex = 0;
 
         Font MenuSelectionFont = new Font("Verdana", 21f);
@@ -128,9 +87,58 @@ namespace MMP {
         Font SongInfoTitleFont = new Font("Verdana", 14f);
         Font SongInfoSubFont = new Font("Verdana", 12f);
 
-        float volume = 0.5f;
+        private float volume = 0.5f;
+
+        public float Volume {
+            get {
+                return volume;
+            }
+            set {
+                volume = value;
+                wave.Volume = value;
+            }
+        }
+        public long Position {
+            get {
+                return wvcn.Length * (wvcn.CurrentTime.Milliseconds / wvcn.TotalTime.Milliseconds);
+            }
+            set {
+                wvcn.Seek(value, SeekOrigin.Begin);
+            }
+        }
+        public long SongLength {
+            get {
+                return wvcn.Length;
+            }
+        }
+        public bool Paused {
+            get {
+                return !playing;
+            }
+            set {
+                if (loaded) {
+                    if (value)
+                        wave.Pause();
+                    else
+                        wave.Play();
+                    playing = !value;
+                }
+            }
+        }
+        public bool ShowSongInfo = false;
 
         double cred = 128, cgreen = 128, cblue = 128, nred = 128, ngreen = 128, nblue = 128, rred, rgreen, rblue;
+
+        public Color CurrentColor {
+            get {
+                return Color.FromArgb((int)cred, (int)cgreen, (int)cblue);
+            }
+            set {
+                nred = value.R;
+                ngreen = value.G;
+                nblue = value.B;
+            }
+        }
 
         Color SysColor = Color.FromArgb(0);
         Color SongColor = Color.FromArgb(0);
@@ -142,10 +150,26 @@ namespace MMP {
             hk_MediaNext = new GlobalHotkey(Constants.NOMOD, Keys.MediaNextTrack, this);
             hk_MediaPrev = new GlobalHotkey(Constants.NOMOD, Keys.MediaPreviousTrack, this);
             hk_MediaPlay = new GlobalHotkey(Constants.NOMOD, Keys.MediaPlayPause, this);
+            hk_StandNext = new GlobalHotkey(Constants.CTRL | Constants.SHIFT, Keys.F12, this);
+            hk_StandPrev = new GlobalHotkey(Constants.CTRL | Constants.SHIFT, Keys.F11, this);
+            hk_StandPlay = new GlobalHotkey(Constants.CTRL | Constants.SHIFT, Keys.F10, this);
             hk_MediaNext.Register();
             hk_MediaPrev.Register();
             hk_MediaPlay.Register();
-            Enum.TryParse<ColorMode>(Properties.MMP.Default.DrawMode, out colorMode);
+            hk_StandNext.Register();
+            hk_StandPrev.Register();
+            hk_StandPlay.Register();
+            Enum.TryParse(Properties.MMP.Default.DrawMode, out colorMode);
+            menuControl = new MenuController(this);
+            songHandler = new SongHandler(this);
+            menuControl.Add(new VolumeMenuHandler(songHandler, menuControl));
+            menuControl.Add(new NextSongMenuHandler(songHandler, menuControl));
+            menuControl.Add(new PositionMenuHandler(songHandler, menuControl));
+            menuControl.Add(new TrackMenuHandler(songHandler, menuControl));
+            menuControl.Add(new PreviousSongMenuHandler(songHandler, menuControl));
+            menuControl.Add(new CloseMenuHandler(songHandler, menuControl));
+            menuControl.DoCreate();
+            Paused = true;
         }
 
         protected override void WndProc(ref Message m) {
@@ -155,23 +179,17 @@ namespace MMP {
         }
 
         private void HandleHotkey() {
-            if (Keyboard.IsKeyDown(Keys.MediaNextTrack))
+            if (Keyboard.IsKeyDown(Keys.MediaNextTrack) || Keyboard.IsKeyDown(Keys.F12))
                 LoadNext();
-            if (Keyboard.IsKeyDown(Keys.MediaPreviousTrack))
+            if (Keyboard.IsKeyDown(Keys.MediaPreviousTrack) || Keyboard.IsKeyDown(Keys.F11))
                 LoadPrevious();
-            if (Keyboard.IsKeyDown(Keys.MediaPlayPause)) {
-                if (playing) 
-                    wave.Pause();
-                else 
-                    wave.Play();
-                playing = !playing;
-            }
+            if (Keyboard.IsKeyDown(Keys.MediaPlayPause) || Keyboard.IsKeyDown(Keys.F10))
+                Paused = !Paused;
         }
 
         public void SongDialog() {
             if (loaded) {
-                wave.Pause();
-                playing = false;
+                Paused = true;
             }
             using (OpenFileDialog fd = new OpenFileDialog()) {
                 fd.InitialDirectory = "c://";
@@ -220,25 +238,25 @@ namespace MMP {
             }
         }
 
-        private void LoadPlaylist(string url) {
+        public void LoadPlaylist(string url) {
             currentPlaylist.Load(url);
             playlistActive = true;
             currentIndex = 0;
             LoadSong(currentPlaylist.Songs[0].url, true);
         }
 
-        private void LoadNext() {
+        public void LoadNext() {
             if (!playlistActive) return;
             currentIndex = (currentIndex + 1) % currentPlaylist.Songs.Count;
             LoadSong(currentPlaylist.Songs[currentIndex].url, true);
         }
-        private void LoadPrevious() {
+        public void LoadPrevious() {
             if (!playlistActive) return;
             currentIndex = (currentIndex - 1) < 0 ? currentPlaylist.Songs.Count - 1 : currentIndex - 1;
             LoadSong(currentPlaylist.Songs[currentIndex].url, true);
         }
 
-        private void LoadSong(string url, bool fromPlaylist = false) {
+        public void LoadSong(string url, bool fromPlaylist = false) {
             string ext = Path.GetExtension(url);
             if (loaded) {
                 wave.Dispose();
@@ -276,7 +294,7 @@ namespace MMP {
             wave.Volume = volume;
             wave.Init(wvcn);
             loaded = true;
-            playing = true;
+            Paused = false;
             currentSong = new Song(url, true);
             if (currentSong.HasArt) {
                 SongColor = ImageProcessor.AverageColor(new Bitmap(currentSong.art));
@@ -285,6 +303,7 @@ namespace MMP {
                 colorMode = ColorMode.Random;
             }
             wave.Play();
+            menuControl.DoSongLoaded(currentSong);
 
             using (Graphics g = Graphics.FromImage(SongInformation)) {
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
@@ -360,7 +379,7 @@ namespace MMP {
                 else
                     e.Graphics.FillRectangle(colorMode == ColorMode.System ? new SolidBrush(SysColor) : (colorMode == ColorMode.Image ? new SolidBrush(SongColor) : RandomColorBG), q);
             Rectangle c = rect;
-            if (playing) {
+            if (!Paused) {
                 float per = curval > 1 ? 1 : curval;
                 c.Inflate(-50, -50);
                 c.Inflate((int)(50 * per), (int)(50 * per));
@@ -375,30 +394,13 @@ namespace MMP {
             strfmt.LineAlignment = StringAlignment.Center;
 
             if (selecting) {
-                if (loaded && !moving && !inCenter && currentSong.HasArt)
+                if (loaded && !menuControl.MenuActive && !inCenter && currentSong.HasArt)
                     e.Graphics.FillRectangle(InnerBrush_Image, q);
-                if (moving) {
-                    if (mode == selectionModes.Position) {
-                        g.FillPie(new SolidBrush(Color.FromArgb(128, Color.LightGray)), rect, 270f, cursel);
-                    }
-                    if (mode == selectionModes.Volume) {
-                        g.FillPie(new SolidBrush(Color.FromArgb(128, Color.Black)), rect, 270f, curact);
-                        g.FillPie(new SolidBrush(Color.FromArgb(64, Color.LightGray)), rect, 270f, cursel);
-                    }
-                    if (mode == selectionModes.Track) {
-                        e.Graphics.FillRectangle(InnerBrush_Image, q);
-                        nextact = NormalizeDegrees((((float)Math.Floor((cursel / 360f) * currentPlaylist.Songs.Count) / currentPlaylist.Songs.Count) * 360f) - 90f);
-                        g.FillPie(new SolidBrush(Color.FromArgb(128, Color.Black)), rect, curact, (360f / currentPlaylist.Songs.Count));
-                        e.Graphics.DrawString(currentPlaylist.Songs[(int)((nextsel / 360f) * currentPlaylist.Songs.Count)].title, SongInfoTitleFont, Brushes.Black, new RectangleF(q.Location, q.Size), strfmt);
-                    }
-                }
             }
-            if (playlistActive)
-                menucount = Labels.Length;
-            else
-                menucount = LabelsNoPlaylist.Length;
-            if(curact > 0.5 && !moving){
-                for (int i = 0; i < menucount; i++) {
+            if (menuControl.MenuActive)
+                menuControl.ActiveMenu.Draw(g, rect);
+            if (curact > 0.5){
+                for (int i = 0; i < menuControl.ActiveMenus; i++) {
                     g.FillPie(new SolidBrush(Color.FromArgb(64, Color.White)), rect, 270f + (i * curact), curact);
                     g.DrawPie(new Pen(Color.FromArgb(172, Color.White), 2), rect, 270f + (i * curact), curact);
                 }
@@ -411,7 +413,7 @@ namespace MMP {
             ColorMatrix matrix = new ColorMatrix();
             matrix.Matrix33 = curanim;
             ia.SetColorMatrix(matrix);
-            if (loaded && (mouseInside || (!moving && mode != selectionModes.Track)) && (selecting ? inCenter : true)) {
+            if (loaded && ShowSongInfo && (selecting && inCenter)) {
                 e.Graphics.FillEllipse(new SolidBrush(Color.FromArgb((int)(128 * curanim), Color.White)), q);
                 e.Graphics.DrawImage(SongInformation, new Rectangle(50, 50, 200, 200), 0f, 0f, 200f, 200f, GraphicsUnit.Pixel, ia);
             }
@@ -421,8 +423,8 @@ namespace MMP {
             e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             e.Graphics.DrawImage(b, rect, rect.X, rect.Y, rect.Width, rect.Height, GraphicsUnit.Pixel, ia);
 
-            if (loaded && selecting && !moving && !inCenter) {
-                e.Graphics.DrawString(playlistActive ? Labels[(int)(nextsel / (360f / menucount))] : LabelsNoPlaylist[(int)(nextsel / (360f / menucount))], MenuSelectionFont, new SolidBrush(Color.FromArgb((int)(255 * curanim), Color.Black)), q, strfmt);
+            if (loaded && selecting && !menuControl.MenuActive && !inCenter) {
+                e.Graphics.DrawString(menuControl[(int)((nextsel / 360f) * menuControl.ActiveMenus)].Label, MenuSelectionFont, Brushes.Black, new PointF(150f, 150f), strfmt);
             }
             g.Dispose();
             b.Dispose();
@@ -447,51 +449,6 @@ namespace MMP {
             return (float)Math.Sqrt(Math.Pow(p1.X - p2.X, 2) + Math.Pow(p1.Y - p2.Y, 2));
         }
 
-        private void mainPanel_Click(object sender, EventArgs e) {
-        }
-
-        private static Bitmap Blur(Bitmap image, Rectangle rectangle, Int32 blurSize) {
-            Bitmap blurred = new Bitmap(image.Width, image.Height);
-
-            // make an exact copy of the bitmap provided
-            using (Graphics graphics = Graphics.FromImage(blurred))
-                graphics.DrawImage(image, new Rectangle(0, 0, image.Width, image.Height),
-                    new Rectangle(0, 0, image.Width, image.Height), GraphicsUnit.Pixel);
-
-            // look at every pixel in the blur rectangle
-            for (Int32 xx = rectangle.X; xx < rectangle.X + rectangle.Width; xx++) {
-                for (Int32 yy = rectangle.Y; yy < rectangle.Y + rectangle.Height; yy++) {
-                    Int32 avgR = 0, avgG = 0, avgB = 0;
-                    Int32 blurPixelCount = 0;
-
-                    // average the color of the red, green and blue for each pixel in the
-                    // blur size while making sure you don't go outside the image bounds
-                    for (Int32 x = xx; (x < xx + blurSize && x < image.Width); x++) {
-                        for (Int32 y = yy; (y < yy + blurSize && y < image.Height); y++) {
-                            Color pixel = blurred.GetPixel(x, y);
-
-                            avgR += pixel.R;
-                            avgG += pixel.G;
-                            avgB += pixel.B;
-
-                            blurPixelCount++;
-                        }
-                    }
-
-                    avgR = avgR / blurPixelCount;
-                    avgG = avgG / blurPixelCount;
-                    avgB = avgB / blurPixelCount;
-
-                    // now that we know the average for the blur size, set each pixel to that color
-                    for (Int32 x = xx; x < xx + blurSize && x < image.Width && x < rectangle.Width; x++)
-                        for (Int32 y = yy; y < yy + blurSize && y < image.Height && y < rectangle.Height; y++)
-                            blurred.SetPixel(x, y, Color.FromArgb(avgR, avgG, avgB));
-                }
-            }
-
-            return blurred;
-        }
-
         private void Form1_MouseClick(object sender, MouseEventArgs e) {
             if (e.Button == MouseButtons.Right) {
                 SongDialog();
@@ -499,70 +456,17 @@ namespace MMP {
             }
             if (loaded) {
                 if (selecting) {
-                    if (moving) {
-                        switch (mode) {
-                            case selectionModes.Volume: {
-                                    wave.Volume = nextsel / 360f;
-                                    this.volume = wave.Volume;
-                                    nextact = nextsel;
-                                    break;
-                                }
-                            case selectionModes.Position: {
-                                    nextact = nextsel;
-                                    nextpos = nextsel;
-                                    long position = (long)((float)wvcn.Length * (nextact / 360f));
-                                    wvcn.Seek(position, SeekOrigin.Begin);
-                                    break;
-                                }
-                            case selectionModes.Track: {
-                                    currentIndex = (int) (nextsel / (360f /  currentPlaylist.Songs.Count)) - 1;
-                                    LoadNext();
-                                    break;
-                                }
+                    if (inCenter)
+                        Paused = !Paused;
+                    else {
+                        menuControl.SetActiveMenu((int)((nextsel / 360f) * menuControl.ActiveMenus));
+                        if(menuControl.ActiveMenu.OnActivated()) {
+                            menuControl.ShowControls = false;
                         }
-                    } else {
-                        if (inCenter) {
-                            if (playing) {
-                                wave.Pause();
-                            } else {
-                                wave.Play();
-                            }
-                            playing = !playing;
-                        } else {
-                            if (playlistActive)
-                                menucount = Labels.Length;
-                            else
-                                menucount = LabelsNoPlaylist.Length;
-                            int s = (int)(nextsel / (360f / menucount));
-                            mode = playlistActive ? (selectionModes)s : ConvertModes((selectionModesNoPlaylist)s);
-                            switch (mode) {
-                                case selectionModes.Volume: {
-                                        nextact = wave.Volume * 360f;
-                                        moving = true;
-                                        break;
-                                    }
-                                case selectionModes.Track: {
-                                    moving = true;
-                                    break;
-                                    }
-                                case selectionModes.Close: {
-                                    this.Close();
-                                    break;
-                                    }
-                                case selectionModes.Next: {
-                                    LoadNext();
-                                    break;
-                                    }
-                                case selectionModes.Previous: {
-                                    LoadPrevious();
-                                    break;
-                                    }
-                                case selectionModes.Position: {
-                                    moving = true;
-                                    break;
-                                    }
-                            }
-                        }
+                    }
+                } else {
+                    if (menuControl.MenuActive) {
+                        menuControl.ActiveMenu.OnClick();
                     }
                 }
             }
@@ -581,26 +485,29 @@ namespace MMP {
 
         private void Form1_MouseEnter(object sender, EventArgs e) {
             mouseInside = true;
+            ShowSongInfo = true;
             timer2.Enabled = false;
         }
 
         private void Form1_MouseLeave(object sender, EventArgs e) {
+            if (menuControl.MenuActive)
+                menuControl.ActiveMenu.MouseLeave();
             selecting = false;
-            moving = false;
             mouseInside = false;
             nextact = 0f;
             timer2.Enabled = true;
+            ShowSongInfo = false;
         }
 
         private void Form1_MouseHover(object sender, EventArgs e) {
             if (windowMoving || !loaded) return;
             selecting = true;
-            nextact = 360f / menucount;
+            nextact = 360f / menuControl.ActiveMenus;
             nextanim = 1;
         }
 
         private void Form1_MouseDown(object sender, MouseEventArgs e) {
-            if (!selecting && e.Button == System.Windows.Forms.MouseButtons.Left) {
+            if (!selecting && e.Button == MouseButtons.Left && !menuControl.MenuActive) {
                 windowMoving = true;
                 lastLocation = e.Location;
             }

@@ -44,7 +44,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
     <DebugType>pdbonly</DebugType>
-    <Optimize>false</Optimize>
+    <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
@@ -104,8 +104,14 @@
     <Compile Include="Hotkeys.cs" />
     <Compile Include="ImageProcessor.cs" />
     <Compile Include="Keyboard.cs" />
-    <Compile Include="Menu.cs" />
+    <Compile Include="MenuController.cs" />
     <Compile Include="MenuHandler.cs" />
+    <Compile Include="MenuHandlers\CloseMenuHandler.cs" />
+    <Compile Include="MenuHandlers\NextSongMenuHandler.cs" />
+    <Compile Include="MenuHandlers\PositionMenuHandler.cs" />
+    <Compile Include="MenuHandlers\PreviousSongMenuHandler.cs" />
+    <Compile Include="MenuHandlers\TrackMenuHandler.cs" />
+    <Compile Include="MenuHandlers\VolumeMenuHandler.cs" />
     <Compile Include="Properties\MMP.Designer.cs">
       <AutoGen>True</AutoGen>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
@@ -116,6 +122,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SampleAggregator.cs" />
     <Compile Include="Song.cs" />
+    <Compile Include="SongHandler.cs" />
     <Compile Include="WaveListenerProvider.cs" />
     <EmbeddedResource Include="Form1.resx">
       <DependentUpon>Form1.cs</DependentUpon>
